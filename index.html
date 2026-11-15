@@ -38,6 +38,13 @@
     .box { width:24px; height:24px; border:2px solid var(--dim); border-radius:6px; flex:none; }
     li.done .box { background:var(--accent); border-color:var(--accent); }
     li.done span { color:var(--dim); text-decoration:line-through; }
+    li.item span { flex:1; min-width:0; overflow-wrap:anywhere; }
+    .edit-btn { border:none; background:transparent; color:var(--dim); padding:6px 8px; margin:-6px -4px -6px 0; display:flex; }
+    .edit-btn svg { width:20px; height:20px; }
+    li.editing { flex-wrap:wrap; cursor:default; gap:8px; }
+    li.editing input { flex:1 1 100%; }
+    li.editing button { flex:1; padding:10px 8px; font-size:15px; }
+    li.editing .danger { color:var(--warn); border-color:var(--warn); }
     .bar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:16px; color:var(--dim); font-size:14px; }
     .empty { color:var(--dim); padding:16px 4px; }
     .hint { color:var(--dim); font-size:13px; margin:0 0 8px; min-height:0; }
@@ -99,7 +106,9 @@
   const voiceEl = document.getElementById('voice');
   const micBtn = document.getElementById('mic');
   let items = [];
+  let editingId = null; // while an item is open for editing, background refreshes don't redraw
   let queue = Promise.resolve();
+  const PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.8 2.8 0 0 0-4-4L4 16v4"/><path d="M13.5 6.5l4 4"/></svg>';
 
   // All requests go one at a time so quick taps land in order.
   function api(params) {
@@ -139,6 +148,8 @@
   function renderList(result) {
     items = result;
     statusEl.textContent = items.filter(function (i) { return !i.done; }).length + ' to get';
+    if (editingId && items.some(function (i) { return i.id === editingId; })) return; // don't yank the edit box away
+    editingId = null;
     listEl.innerHTML = '';
     if (!items.length) {
       listEl.innerHTML = '<li class="empty">The list is empty.</li>';
@@ -147,9 +158,14 @@
     items.slice().sort(function (a, b) { return a.done - b.done; }).forEach(function (it) {
       const li = document.createElement('li');
       li.className = 'item' + (it.done ? ' done' : '');
+      li.dataset.id = it.id;
       const box = document.createElement('div'); box.className = 'box';
       const text = document.createElement('span'); text.textContent = it.item;
-      li.appendChild(box); li.appendChild(text);
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'edit-btn'; edit.innerHTML = PENCIL;
+      edit.setAttribute('aria-label', 'Edit ' + it.item);
+      edit.onclick = function (e) { e.stopPropagation(); openEditor(li, it); };
+      li.appendChild(box); li.appendChild(text); li.appendChild(edit);
       li.onclick = function () {
         it.done = !it.done; // show it right away
         renderList(items);
@@ -157,6 +173,55 @@
       };
       listEl.appendChild(li);
     });
+  }
+
+  // Swap a row for a small editor: fix the text (Enter saves), delete it, or cancel.
+  function openEditor(li, it) {
+    if (editingId) {
+      // Closing the other editor redraws the list, so look this row up again.
+      closeEditor();
+      li = listEl.querySelector('li[data-id="' + CSS.escape(it.id) + '"]');
+      if (!li) return;
+    }
+    editingId = it.id;
+    li.onclick = null;
+    li.className = 'item editing';
+    li.innerHTML = '';
+    const input = document.createElement('input');
+    input.type = 'text'; input.value = it.item; input.maxLength = 100;
+    input.setAttribute('aria-label', 'Item name');
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'primary'; save.textContent = 'Save';
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'danger'; del.textContent = 'Delete';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
+    li.appendChild(input); li.appendChild(save); li.appendChild(del); li.appendChild(cancel);
+
+    function doSave() {
+      const value = input.value.trim();
+      if (!value) { input.focus(); return; }
+      if (value === it.item) { closeEditor(); return; }
+      it.item = value;
+      closeEditor();
+      change({ action: 'edit', id: it.id, item: value });
+    }
+    save.onclick = doSave;
+    input.onkeydown = function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doSave(); }
+      if (e.key === 'Escape') closeEditor();
+    };
+    del.onclick = function () {
+      if (!confirm('Delete “' + it.item + '” from the list?')) return;
+      items = items.filter(function (i) { return i.id !== it.id; });
+      closeEditor();
+      change({ action: 'delete', id: it.id });
+    };
+    cancel.onclick = closeEditor;
+    input.focus();
+    input.select();
+  }
+
+  function closeEditor() {
+    editingId = null;
+    renderList(items);
   }
 
   function renderTrips(trips) {
@@ -260,7 +325,7 @@
     rec.onresult = function (e) {
       const parsed = parseSpoken(e.results[0][0].transcript);
       if (!parsed.length) { voiceHint("Didn't catch an item. Try again.", true); return; }
-      voiceHint('Added: ' + parsed.join(', '));
+      voiceHint('Added: ' + parsed.join(', ') + '. Tap the pencil next to an item to fix it.');
       addItems(parsed);
     };
     try { rec.start(); } catch (err) { voiceHint("Couldn't start the microphone. Use the keyboard's microphone instead.", true); }
