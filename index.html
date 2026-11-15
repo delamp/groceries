@@ -9,6 +9,9 @@
   <meta name="theme-color" content="#0f1317" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="robots" content="noindex">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <title>Groceries</title>
   <!--
     Shared grocery list, phone version. Hosted outside Google's Apps Script frame so the
@@ -330,6 +333,11 @@
     };
     try { rec.start(); } catch (err) { voiceHint("Couldn't start the microphone. Use the keyboard's microphone instead.", true); }
   };
+
+  // Lets Chrome install this as an app and open it without a connection.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+  }
 
   // ---- Start ---------------------------------------------------------------------------
   if (!KEY) {
