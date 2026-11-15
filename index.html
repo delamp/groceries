@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Groceries">
+  <meta name="theme-color" content="#0f1317" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="robots" content="noindex">
+  <title>Groceries</title>
+  <!--
+    Shared grocery list, phone version. Hosted outside Google's Apps Script frame so the
+    microphone works. Talks to the same Apps Script data feed as the wall tablet.
+    The secret key is NOT in this file: it comes from the link, after "#k=", and is
+    remembered on this phone only.
+  -->
+  <style>
+    :root { --bg:#ffffff; --fg:#1d2329; --dim:#6b7783; --line:#e3e7eb; --accent:#0b7fc1; --day:#b26a00; --warn:#c62828; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0f1317; --fg:#f2f4f6; --dim:#93a1ad; --line:#2a333b; --accent:#4fc3f7; --day:#ffb74d; --warn:#ef5350; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:17px/1.4 -apple-system, Roboto, "Segoe UI", sans-serif; }
+    main { max-width:520px; margin:0 auto; padding:20px 16px 40px; padding-top:max(20px, env(safe-area-inset-top)); }
+    h1 { font-size:24px; font-weight:600; margin:0 0 16px; }
+    h2 { font-size:15px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); margin:32px 0 8px; }
+    form { display:flex; gap:8px; margin-bottom:8px; }
+    input[type=text] { flex:1; min-width:0; font-size:17px; padding:12px; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--fg); }
+    button { font-size:16px; padding:12px 16px; border-radius:10px; border:1px solid var(--line); background:transparent; color:var(--fg); cursor:pointer; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    #mic { padding:10px 12px; display:flex; align-items:center; justify-content:center; }
+    #mic svg { width:22px; height:22px; }
+    #mic.listening { background:var(--warn); border-color:var(--warn); color:#fff; }
+    ul { list-style:none; margin:0; padding:0; }
+    li.item { display:flex; align-items:center; gap:12px; padding:14px 4px; border-bottom:1px solid var(--line); cursor:pointer; user-select:none; -webkit-tap-highlight-color:transparent; }
+    .box { width:24px; height:24px; border:2px solid var(--dim); border-radius:6px; flex:none; }
+    li.done .box { background:var(--accent); border-color:var(--accent); }
+    li.done span { color:var(--dim); text-decoration:line-through; }
+    .bar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:16px; color:var(--dim); font-size:14px; }
+    .empty { color:var(--dim); padding:16px 4px; }
+    .hint { color:var(--dim); font-size:13px; margin:0 0 8px; min-height:0; }
+    .hint.err { color:var(--warn); }
+    .trip { padding:12px 0; border-bottom:1px solid var(--line); }
+    .when { color:var(--day); font-weight:600; font-size:15px; margin-bottom:6px; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; }
+    .chip { font-size:15px; padding:6px 10px; border:1px solid var(--line); border-radius:999px; cursor:pointer; }
+    #setup { display:none; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Groceries</h1>
+
+  <div id="setup">
+    <p>This page needs your private link to open the list. Open the link that ends in <code>#k=…</code> once on this phone and it'll be remembered.</p>
+  </div>
+
+  <div id="app">
+    <form id="add">
+      <input id="item" type="text" placeholder="Milk" autocomplete="off" maxlength="100" enterkeyhint="done">
+      <button id="mic" type="button" aria-label="Add by voice" title="Add by voice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg>
+      </button>
+      <button class="primary" type="submit">Add</button>
+    </form>
+    <p id="voice" class="hint" hidden></p>
+    <ul id="list"><li class="empty">Loading…</li></ul>
+    <div class="bar">
+      <span id="status"></span>
+      <button id="shop" type="button">Done shopping</button>
+    </div>
+
+    <h2>Past trips</h2>
+    <p class="hint">Tap an item to add it back to the list.</p>
+    <div id="trips"><div class="empty">Loading…</div></div>
+  </div>
+</main>
+<script>
+  // The data feed (Google Apps Script web app). Useless without the key.
+  const API = 'https://script.google.com/macros/s/AKfycbwUokDW9UBEu7_ATuQTgqP3BSn7qSHg51q5ahX0YkbswbyQZyKPuPeqNHtIrgV-t5yl/exec';
+
+  // Key comes from "#k=..." in the link (never sent to GitHub's servers), then is remembered here.
+  function readKey() {
+    const fromHash = new URLSearchParams(location.hash.slice(1)).get('k');
+    try {
+      if (fromHash) localStorage.setItem('groceryKey', fromHash);
+      return fromHash || localStorage.getItem('groceryKey');
+    } catch (e) {
+      return fromHash;
+    }
+  }
+  const KEY = readKey();
+
+  const listEl = document.getElementById('list');
+  const tripsEl = document.getElementById('trips');
+  const statusEl = document.getElementById('status');
+  const voiceEl = document.getElementById('voice');
+  const micBtn = document.getElementById('mic');
+  let items = [];
+  let queue = Promise.resolve();
+
+  // All requests go one at a time so quick taps land in order.
+  function api(params) {
+    const q = new URLSearchParams(Object.assign({ k: KEY, format: 'json' }, params));
+    const run = function () {
+      return fetch(API + '?' + q.toString(), { redirect: 'follow' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+        .then(function (t) {
+          if (t.trim() === 'Not authorized') throw new Error('auth');
+          return JSON.parse(t);
+        });
+    };
+    const p = queue.then(run, run);
+    queue = p.catch(function () {});
+    return p;
+  }
+
+  function change(params) {
+    statusEl.textContent = 'Saving…';
+    return api(params).then(function (r) { renderList(r.items); return r; }).catch(showError);
+  }
+
+  function refresh() {
+    return api({}).then(function (r) { renderList(r.items); }).catch(showError);
+  }
+
+  function loadTrips() {
+    return api({ action: 'archive' }).then(function (r) { renderTrips(r.trips); }).catch(showError);
+  }
+
+  function showError(e) {
+    statusEl.textContent = e && e.message === 'auth'
+      ? 'This link’s key is wrong. Open the full link again.'
+      : "Couldn't reach the list. Check your connection.";
+  }
+
+  function renderList(result) {
+    items = result;
+    statusEl.textContent = items.filter(function (i) { return !i.done; }).length + ' to get';
+    listEl.innerHTML = '';
+    if (!items.length) {
+      listEl.innerHTML = '<li class="empty">The list is empty.</li>';
+      return;
+    }
+    items.slice().sort(function (a, b) { return a.done - b.done; }).forEach(function (it) {
+      const li = document.createElement('li');
+      li.className = 'item' + (it.done ? ' done' : '');
+      const box = document.createElement('div'); box.className = 'box';
+      const text = document.createElement('span'); text.textContent = it.item;
+      li.appendChild(box); li.appendChild(text);
+      li.onclick = function () {
+        it.done = !it.done; // show it right away
+        renderList(items);
+        change({ action: 'done', id: it.id, done: it.done ? '1' : '0' });
+      };
+      listEl.appendChild(li);
+    });
+  }
+
+  function renderTrips(trips) {
+    tripsEl.innerHTML = '';
+    if (!trips.length) {
+      tripsEl.innerHTML = '<div class="empty">Nothing shopped yet.</div>';
+      return;
+    }
+    trips.forEach(function (t) {
+      const div = document.createElement('div'); div.className = 'trip';
+      const when = document.createElement('div'); when.className = 'when';
+      when.textContent = new Date(t.shopped).toLocaleString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
+      }) + ' · ' + t.items.length + (t.items.length === 1 ? ' item' : ' items');
+      const chips = document.createElement('div'); chips.className = 'chips';
+      t.items.forEach(function (name) {
+        const c = document.createElement('span'); c.className = 'chip'; c.textContent = name;
+        c.onclick = function () { change({ action: 'add', item: name }); };
+        chips.appendChild(c);
+      });
+      div.appendChild(when); div.appendChild(chips);
+      tripsEl.appendChild(div);
+    });
+  }
+
+  function addItems(names) {
+    names.forEach(function (n) { change({ action: 'add', item: n }); });
+  }
+
+  document.getElementById('add').onsubmit = function (e) {
+    e.preventDefault();
+    const input = document.getElementById('item');
+    const value = input.value.trim();
+    if (!value) return;
+    input.value = '';
+    addItems([value]);
+  };
+
+  document.getElementById('shop').onclick = function () {
+    const checked = items.filter(function (i) { return i.done; }).length;
+    let wholeList = false;
+    if (checked > 0) {
+      if (!confirm('Move ' + checked + ' checked item' + (checked === 1 ? '' : 's') + ' to Past trips?')) return;
+    } else if (items.length > 0) {
+      if (!confirm('Nothing is checked. Mark the whole list (' + items.length + ' items) as shopped?')) return;
+      wholeList = true;
+    } else {
+      return;
+    }
+    change({ action: 'shop', all: wholeList ? '1' : '0' }).then(loadTrips);
+  };
+
+  // ---- Voice ---------------------------------------------------------------------------
+  // "Add milk, eggs and bread to the list" -> Milk, Eggs, Bread. Same rules as the tablet.
+  function parseSpoken(text) {
+    const s = text.toLowerCase().trim()
+      .replace(/^(please\s+)?(add|put|get|buy|we need|i need|we're out of|we are out of)\s+/, '')
+      .replace(/\s+(to|on)\s+(the\s+)?(grocery\s+|shopping\s+)?list\.?$/, '')
+      .replace(/[.!?]+$/, '');
+    return s.split(/\s*,\s*|\s+and\s+|\s+also\s+/)
+      .map(function (x) { return x.trim(); })
+      .filter(Boolean)
+      .slice(0, 10)
+      .map(function (x) { return x.charAt(0).toUpperCase() + x.slice(1); });
+  }
+
+  function voiceHint(msg, isError) {
+    voiceEl.textContent = msg || '';
+    voiceEl.hidden = !msg;
+    voiceEl.classList.toggle('err', !!isError);
+  }
+
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let listening = null;
+
+  micBtn.onclick = function () {
+    if (listening) { listening.stop(); return; }
+    if (!Recognition) {
+      voiceHint("This browser can't listen. Tap the text box and use your keyboard's microphone.", true);
+      document.getElementById('item').focus();
+      return;
+    }
+    const rec = new Recognition();
+    rec.lang = navigator.language || 'en-US';
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.onstart = function () {
+      listening = rec;
+      micBtn.classList.add('listening');
+      voiceHint('Listening… try “milk, eggs and bread”.');
+    };
+    rec.onend = function () { listening = null; micBtn.classList.remove('listening'); };
+    rec.onerror = function (e) {
+      listening = null;
+      micBtn.classList.remove('listening');
+      if (e.error === 'no-speech' || e.error === 'aborted') { voiceHint("Didn't hear anything. Tap the mic and try again."); return; }
+      voiceHint(e.error === 'not-allowed' || e.error === 'service-not-allowed'
+        ? 'Microphone is blocked. Allow it for this site in your browser settings, or use the keyboard’s mic.'
+        : "Didn't catch that. Try again.", true);
+    };
+    rec.onresult = function (e) {
+      const parsed = parseSpoken(e.results[0][0].transcript);
+      if (!parsed.length) { voiceHint("Didn't catch an item. Try again.", true); return; }
+      voiceHint('Added: ' + parsed.join(', '));
+      addItems(parsed);
+    };
+    try { rec.start(); } catch (err) { voiceHint("Couldn't start the microphone. Use the keyboard's microphone instead.", true); }
+  };
+
+  // ---- Start ---------------------------------------------------------------------------
+  if (!KEY) {
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('setup').style.display = 'block';
+  } else {
+    refresh();
+    loadTrips();
+    setInterval(function () { if (!document.hidden) refresh(); }, 15000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
+  }
+</script>
+</body>
+</html>
